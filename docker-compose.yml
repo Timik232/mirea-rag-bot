@@ -1,0 +1,25 @@
+services:
+  rag-api:
+    build: .
+    container_name: mirea-rag-bot
+    ports:
+      - "8080:8080"
+    volumes:
+      # Persistent data: Qdrant DB, BM25 index, metadata, eval results
+      - ./mirea_data:/app/mirea_data
+      # HF cache — so E5 model downloads once, not every container restart
+      - hf_cache:/root/.cache/huggingface
+    environment:
+      # LM Studio runs on the host; Docker reaches it via host.docker.internal
+      - LM_STUDIO_URL=http://host.docker.internal:1234/v1
+      # Optional: LiteLLM proxy for cloud models (uncomment + set in .env)
+      # - LITELLM_API_BASE=${LITELLM_API_BASE:-}
+      # - LITELLM_API_KEY=${LITELLM_API_KEY:-}
+      # - LITELLM_MODEL=${LITELLM_MODEL:-openai/mistral/magistral-small-latest}
+    extra_hosts:
+      # Required for Linux hosts (Windows/Mac have it built-in)
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+volumes:
+  hf_cache:

@@ -1,0 +1,11 @@
+models/
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.gitignore
+.pytest_cache/
+mirea-rag-bot.zip
+*.egg-info/
+.venv/
+venv/
