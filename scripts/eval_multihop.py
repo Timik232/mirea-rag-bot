@@ -44,9 +44,17 @@ INFO_SECTIONS = {
 
 
 def load_test_set():
-    path = os.path.join(config.DATA_FAISS_DIR, "..", "eval", "multihop_test.json")
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+    # Prefer the runtime copy (mirea_data/eval/, may contain local edits),
+    # fall back to the repo-tracked dataset so a fresh clone works out of the box.
+    candidates = [
+        os.path.join(config.DATA_FAISS_DIR, "..", "eval", "multihop_test.json"),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "eval", "multihop_test.json"),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+    raise FileNotFoundError(f"multihop_test.json not found in any of: {candidates}")
 
 
 def retrieve_filtered(query_vec, query_text, top_k=5):
@@ -166,7 +174,7 @@ def run_test(question, hyp="baseline", top_k=5, llm_config=None):
         "chunks": len(chunks),
         "sections": sections,
         "scores": scores,
-        "answer": answer_text[:500],
+        "answer": answer_text[:2000],
         "retrieval_time": round(retrieval_time, 2),
     }
 

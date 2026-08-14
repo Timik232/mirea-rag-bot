@@ -4,31 +4,77 @@ RAG-система для ответов на вопросы о РТУ МИРЭ�
 
 ## Архитектура
 
+Система состоит из трёх плоскостей: подготовка данных, retrieval+generation пайплайн и API-слой.
+
+### Плоскость данных (offline)
+
 ```
-mirea.ru / student.mirea.ru
-        │
+mirea.ru / student.mirea.ru          VIKA intents dataset (1384 QA-пары)
+        │                                        │
+        ▼                                        ▼
+  [Скраперы 6 шт] ──► raw/*.json          vika_chunks.json
+        │                                        │
+        ▼                                        │
+  [Cleaner] ──► processed/cleaned.json           │
+  (HTML→markdown→boilerplate→ws, sha256-dedup)   │
+        │                                        │
+        ▼                                        │
+  [Chunker] ──► processed/chunks.json (75 чанков,│
+   токенайзер E5, 300 ток., overlap 50)          │
+        │                                        │
+        ▼                                        ▼
+  [Encoder E5-small 384d] ──► faiss/vectors.npy + metadata.json
+        │                          (позиционный doc-id контракт)
         ▼
-  [Скраперы] ──► raw/ (7 JSON: education, applicants, sveden, contacts, qa_pairs, deeper, student_portal)
-        │               │
-        │
-        ▼
-  [Cleaner] ──► processed/cleaned.json (dedup, strip HTML/markdown/boilerplate)
-        │
-        ▼
-  [Chunker] ──► processed/chunks.json (300 токенов E5, overlap 50, 75 чанков)
-        │
-        ▼
-  [Encoder] ──► faiss/vectors.npy (75×384, E5-small) + Qdrant (75 points)
-        │              + bm25/bm25_index.pkl (2702 термина)
-        │
-        ▼
-  [RAG answer.py] ── query → encode → hybrid retrieve (BM25+Dense RRF)
-        │                      → hallucination guard (confidence ≥ 0.55)
-        │                      → prompt → LM Studio (Gemma 4 E4B)
-        │                      → post-process → answer + sources
-        │
-        ▼
-  FastAPI /ask │ CLI python -m src.rag.cli
+  [Qdrant embedded] 1376 points ◄── [BM25 index 1459 docs]
+   mirea_data/qdrant/                 mirea_data/bm25/bm25_index.pkl
+```
+
+`scripts/update_data.py` прогоняет весь пайплайн: бэкап Qdrant в сиблинг-директорию →
+пересборка → копирование metadata.json → rebuild BM25 (все три индекса делят
+позиционные id, поэтому пересобираются вместе).
+
+### Пайплайн ответа (`src/rag/answer.py`, online)
+
+```
+question
+  │ 1. Валидация: тип, control-chars, длина ≤500, осмысленность
+  │ 2. Нормализация: раскрытие 18 аббревиатур МИРЭА, раскладка QWERTY→ЙЦУКЕН,
+  │    пунктуация, whitespace
+  │ 3. Query rewriting: короткий вопрос/местоимения склеиваются
+  │    с предыдущим вопросом из history
+  ▼
+[E5 encode] (prefix "query: ")
+  ▼
+[Hybrid retrieval]  BM25 + Dense, RRF-фузия (k=60), пул 3×top_k
+  │   dense-cosine прокидывается через фузию как dense_score —
+  │   пороги считаются по абсолютной шкале E5, а не по fused-рангу
+  ▼
+[Секционный фильтр]  INFO_SECTIONS (10 инфо-секций);
+  │   исключение: VIKA-чанки с dense ≥ VIKA_DENSE_GATE (0.88) проходят —
+  │   часть фактов живёт только в VIKA QA (общежития, корпуса)
+  ▼
+[Пороги]  RELEVANCE ≥ 0.35 (по dense_score) → top_k = 5
+  │   Hallucination guard: top-1 ≥ 0.55 (bi) / 0.50 (cross-encoder),
+  │   иначе отказ с показанными источниками
+  ▼
+[Генерация]  Gemma 4 E4B (LM Studio :1234), ретраи ×3, анти-инъекции history
+  ▼
+[Пост-обработка]  code-fence, метки «Ответ:», em-dash→en-dash → answer + sources
+```
+
+### API-слой
+
+```
+Docker-контейнер :8080
+  ├── FastAPI  POST /ask (генерация и лог — в threadpool, event loop свободен)
+  │            GET /health, GET /analytics
+  │            GET / — веб-чат (static/index.html)
+  ├── SQLite requests.db — лог вопросов/ответов/уверенности
+  └── Qdrant embedded + BM25 + E5 (внутри контейнера)
+        ▲
+        │ host.docker.internal:1234
+  LM Studio (хост): Gemma 4 E4B IT Q4_K_M
 ```
 
 ## Требования
@@ -40,8 +86,7 @@ mirea.ru / student.mirea.ru
 ## Установка
 
 ```bash
-pip install sentence-transformers qdrant-client fastapi uvicorn \
-    numpy requests beautifulsoup4 lxml pymupdf rank_bm25
+pip install -r requirements.txt
 ```
 
 ## Быстрый старт
@@ -100,7 +145,7 @@ curl -X POST http://localhost:8080/ask \
 | `src/pipeline/cleaner.py` | Очистка: HTML → markdown → boilerplate → whitespace |
 | `src/pipeline/chunker.py` | Чанкинг по предложениям с E5-токенизатором + overlap |
 | `src/embeddings/encoder.py` | E5-small эмбеддинги (384d) |
-| `src/embeddings/indexer.py` | Qdrant + FAISS поиск |
+| `src/embeddings/indexer.py` | Qdrant поиск + сборка индекса |
 | `src/retrieval/bm25.py` | BM25 лексический поиск |
 | `src/retrieval/hybrid.py` | BM25 + Dense RRF fusion |
 | `src/rag/answer.py` | Ядро: encode → retrieve → guard → generate |
@@ -113,7 +158,8 @@ curl -X POST http://localhost:8080/ask \
 
 ## Retrieval
 
-Hybrid retrieval по умолчанию (BM25 + E5 Dense через RRF fusion):
+Гибридный retrieval по умолчанию: BM25 (лексический, точные коды/числа/имена) +
+E5 Dense (семантика) через RRF-фузию, пул кандидатов 3×top_k:
 
 ```python
 # config.py
@@ -122,6 +168,16 @@ HYBRID_FUSION = "rrf"
 HYBRID_RRF_K = 60
 HYBRID_DENSE_WEIGHT = 0.5
 ```
+
+**Важно про шкалы.** RRF-скоры минмакс-нормированы по пулу кандидатов (top-1
+всегда 1.0), поэтому абсолютные пороги по ним не работают. Гибрид прокидывает
+dense-cosine каждого кандидата через фузию как `dense_score` — именно по нему
+считаются `RELEVANCE_THRESHOLD` и `CONFIDENCE_THRESHOLD`.
+
+**Секционный фильтр.** ~95% корпуса — диалоговые qa_vika-чанки; для фактических
+вопросов они шум. После фузии не-информационные секции отбрасываются
+(`INFO_SECTIONS`), но VIKA-чанк с `dense_score ≥ VIKA_DENSE_GATE` проходит:
+часть фактов есть только в VIKA QA (общежития, корпуса, навигация).
 
 Cross-encoder re-ranking доступен, но выключен по умолчанию (съедает VRAM вместе с Gemma):
 
@@ -132,11 +188,17 @@ RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
 
 ## Пороги
 
+Все пороги (кроме fused) оцениваются по абсолютной dense-шкале E5
+(in-domain ≈ 0.84–0.95, out-of-domain ≈ 0.30–0.60):
+
 | Параметр | Значение | Назначение |
 |----------|----------|------------|
-| `RELEVANCE_THRESHOLD` | 0.35 | Минимальный score чанка |
+| `RELEVANCE_THRESHOLD` | 0.35 | Минимальный dense_score чанка |
 | `CONFIDENCE_THRESHOLD` | 0.55 | Hallucination guard (bi-encoder) |
 | `CE_CONFIDENCE_THRESHOLD` | 0.50 | Hallucination guard (cross-encoder) |
+| `VIKA_DENSE_GATE` | 0.88 | Пропуск сильных VIKA-чанков сквозь секционный фильтр |
+| `SECTION_FILTER_ENABLED` | True | Секционный фильтр шума |
+| `SECTION_FILTER_POOL` | 5 | Over-fetch множитель для фильтра |
 | `MAX_CONTEXT_CHUNKS` | 5 | Лимит чанков в контексте |
 | `CHUNK_SIZE` | 300 | Токенов E5 на чанк |
 | `CHUNK_OVERLAP` | 50 | Токенов overlap |
@@ -145,15 +207,12 @@ RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
 
 | Скрипт | Назначение |
 |--------|------------|
-| `scripts/build_index.py` | Чанки → эмбеддинги → FAISS + Qdrant |
+| `scripts/build_index.py` | Чанки → эмбеддинги → Qdrant |
 | `scripts/build_bm25.py` | BM25 индекс из metadata.json |
 | `scripts/build_golden.py` | Golden QA dataset |
+| `scripts/eval_multihop.py` | Multi-hop + hard-set eval (38 вопросов): `--config baseline\|filtered\|decomposed`, `EVAL_QDRANT_PATH` для запуска рядом с живым API |
 | `scripts/verify_quality.py` | 31 проверка качества данных |
 | `scripts/verify_search.py` | 21 тест-запрос retrieval |
-| `scripts/check_consistency.py` | Синхронизация chunks/FAISS/Qdrant/golden |
-| `scripts/update_data.py` | Полный пайплайн (скрап → индекс) |
+| `scripts/check_consistency.py` | Синхронизация chunks/Qdrant/golden |
+| `scripts/update_data.py` | Полный пайплайн (скрап → индекс + бэкап + rebuild BM25) |
 | `scripts/test_lm_studio.py` | Проверка подключения к LM Studio |
-
-```bash
-```
-
