@@ -145,6 +145,15 @@ def rerank_chunks(
             flat.append(float(s))
 
     # Annotate + order. Empty-text chunks go to the very bottom.
+    # Guard: the model may return fewer scores than pairs (truncated batch);
+    # a bare zip() would silently leave chunks without rerank_score and crash
+    # _sort_key below with KeyError.
+    if len(flat) != len(chunks):
+        logger.warning(
+            "Cross-encoder returned %d scores for %d chunks — keeping bi-encoder order",
+            len(flat), len(chunks),
+        )
+        return chunks[:top_k]
     annotated = list(enumerate(chunks))
     for (i, ch), sc in zip(annotated, flat):
         ch["rerank_score"] = None if i in empty_idx else round(sc, 6)

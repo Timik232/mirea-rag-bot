@@ -24,6 +24,20 @@ QDRANT_VECTOR_SIZE = 384
 #            match. See src/retrieval/hybrid.py.
 RETRIEVAL_MODE = "hybrid"
 BM25_INDEX_PATH = "mirea_data/bm25/bm25_index.pkl"
+
+# Section noise filter — removes ~1400 VIKA conversational chunks (qa_vika_*)
+# from retrieval results. When enabled, _retrieve over-fetches
+# SECTION_FILTER_POOL*top_k candidates, drops non-informational sections,
+# and keeps top_k. Measured: 3/5 multi-hop questions went from 100% noise to
+# 100% relevant chunks. See INFO_SECTIONS in src/rag/answer.py.
+SECTION_FILTER_ENABLED = True
+SECTION_FILTER_POOL = 5       # over-fetch multiplier (top_k * this = pool size)
+# Dense-cosine gate for the section filter: a non-informational (qa_vika_*)
+# chunk survives filtering when its absolute E5 cosine clears this value.
+# Calibration (E5 cosine against the query): in-domain site chunks 0.84–0.95,
+# out-of-domain ~0.30–0.60; the VIKA hostel-list chunk scores 0.91 while
+# VIKA chatter scores ≤0.86 — 0.88 separates them.
+VIKA_DENSE_GATE = 0.88
 HYBRID_FUSION = "rrf"          # "rrf" (rank-based, robust) | "weighted"
 HYBRID_RRF_K = 60              # RRF constant (Cormack et al. 2009 default)
 HYBRID_DENSE_WEIGHT = 0.5      # dense share; BM25 gets (1 - this). 0.5 = equal
@@ -88,7 +102,10 @@ LITELLM_CONFIG = {
 LM_STUDIO_CONFIG = {
     "api_base": os.environ.get("LM_STUDIO_URL", "http://localhost:1234/v1"),
     "api_key": "lm-studio",  # LM Studio accepts any non-empty key
-    "model": "google/gemma-4-e2b",  # identifier shown in LM Studio
+    # Model id as shown by LM Studio's /v1/models. Default matches Gemma 4
+    # E4B IT (Q4_K_M) — the generation model this pipeline is calibrated for.
+    # Override with LM_STUDIO_MODEL when serving a different model.
+    "model": os.environ.get("LM_STUDIO_MODEL", "gemma-4-e4b-it"),
     "temperature": 0.3,
     "max_tokens": 1024,
     "context_length": 8192,  # fits 8GB VRAM budget

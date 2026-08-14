@@ -206,7 +206,13 @@ class HybridRetriever:
         """
         if dense_search is None:
             from src.embeddings.indexer import search_qdrant
-            dense_search = search_qdrant
+            # Wrap search_qdrant to match DenseSearchFn signature (vec, top_k).
+            # search_qdrant's own signature is (query_vector, qdrant_path,
+            # collection_name, top_k) — passing top_k positionally would inject
+            # an int into qdrant_path, breaking QdrantClient. This adapter is
+            # the fix for the hybrid-fallback bug (task: hybrid-bm25-broken).
+            def dense_search(vec: np.ndarray, k: int):  # type: ignore[no-redef]
+                return search_qdrant(vec, top_k=k)
         bm25 = BM25Index.load(default_index_path())
         meta_path = os.path.join(config.DATA_FAISS_DIR, "metadata.json")
         import json
@@ -301,10 +307,15 @@ class HybridRetriever:
         # Build payload map from dense results (they carry full payloads
         # from Qdrant).
         dense_payloads: dict[int, dict] = {}
+        # Absolute dense-cosine per candidate, carried through fusion so
+        # downstream thresholds (answer._threshold_score) can use the
+        # calibrated scale instead of the pool-normalised fused rank score.
+        dense_scores: dict[int, float] = {}
         for item in dense_hits:
             # Dense hits can be either dicts (search_qdrant shape) or tuples.
             if isinstance(item, dict):
                 dense_payloads[item["id"]] = item.get("payload", {})
+                dense_scores[item["id"]] = float(item.get("score", 0.0))
 
         results = []
         for doc_id, score in fused:
@@ -314,7 +325,13 @@ class HybridRetriever:
                     payload = self._metadata[doc_id]
             if payload is None:
                 payload = {}
-            results.append({"id": doc_id, "score": score, "payload": payload})
+            results.append({
+                "id": doc_id,
+                "score": score,
+                # None for BM25-only candidates that the dense leg never saw.
+                "dense_score": dense_scores.get(doc_id),
+                "payload": payload,
+            })
         return results
 
 

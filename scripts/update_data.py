@@ -50,34 +50,56 @@ def _run_module(module_name: str, dry_run: bool) -> bool:
     if dry_run:
         print(f"  [DRY-RUN] would run: python -m {module_name}")
         return True
-    result = subprocess.run(
-        [sys.executable, "-m", module_name],
-        cwd=os.path.join(os.path.dirname(__file__), ".."),
-        timeout=3600,
-    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", module_name],
+            cwd=os.path.join(os.path.dirname(__file__), ".."),
+            timeout=3600,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"  FAILED: {module_name} timed out after 3600s")
+        return False
     if result.returncode != 0:
         print(f"  FAILED: {module_name} exited with code {result.returncode}")
         return False
     return True
 
 
+def _current_point_count() -> int | None:
+    """Points in the live Qdrant collection, or None if unavailable."""
+    try:
+        from src.embeddings.qdrant_indexer import QdrantIndexer
+
+        info = QdrantIndexer().get_collection_info(config.QDRANT_PATH, config.QDRANT_COLLECTION)
+        return int(info.get("points_count", 0))
+    except Exception as exc:  # noqa: BLE001 — informational only
+        print(f"  (could not read current Qdrant point count: {exc})")
+        return None
+
+
 def _backup_qdrant(qdrant_dir: str, dry_run: bool):
+    """Move the live Qdrant storage to a SIBLING backup directory.
+
+    The backup must live OUTSIDE the live path: _build_qdrant_atomic replaces
+    the whole qdrant directory, so a backup stored inside it (the old
+    ``qdrant/backup/`` scheme) was destroyed by the very rebuild it was
+    supposed to protect.
+
+    Returns the backup directory path, or None when there was nothing to back up.
+    """
     qdrant_path = Path(qdrant_dir)
     if not qdrant_path.exists():
         print("  No existing Qdrant data to back up.")
-        return
-    backup_dir = qdrant_path / "backup"
+        return None
+    backup_dir = qdrant_path.parent / (qdrant_path.name + "_backup")
     if dry_run:
         print(f"  [DRY-RUN] would back up {qdrant_dir} → {backup_dir}")
-        return
+        return backup_dir
     if backup_dir.exists():
         shutil.rmtree(backup_dir)
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    for item in qdrant_path.iterdir():
-        if item.name == "backup":
-            continue
-        shutil.move(str(item), str(backup_dir / item.name))
+    shutil.move(str(qdrant_path), str(backup_dir))
     print(f"  Backed up existing Qdrant data to {backup_dir}")
+    return backup_dir
 
 
 def _build_qdrant_atomic(dry_run: bool) -> tuple[int, int, int] | None:
@@ -113,12 +135,24 @@ def _build_qdrant_atomic(dry_run: bool) -> tuple[int, int, int] | None:
             vector_size=config.QDRANT_VECTOR_SIZE,
         )
 
-        # Atomic swap: replace final Qdrant dir with temp dir contents
+        # Atomic swap: replace final Qdrant dir with temp dir contents.
+        # The previous storage was moved away by _backup_qdrant (sibling
+        # directory), so a failure here leaves BOTH the old backup and this
+        # temp build intact — no total loss window.
         target = Path(config.QDRANT_PATH)
         if target.exists():
             shutil.rmtree(target)
         shutil.copytree(tmp_dir, target)
+        # Keep the dense-metadata sidecar next to the vectors in sync: the
+        # hybrid retriever reads payload fallbacks and BM25 source data from
+        # DATA_FAISS_DIR/metadata.json. Without this copy it stays stale
+        # after every rebuild (hybrid then mixes a new corpus with an old
+        # positional id contract).
+        faiss_meta = Path(config.DATA_FAISS_DIR) / "metadata.json"
+        faiss_meta.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(metadata_path, faiss_meta)
         print(f"  Qdrant index atomically moved to {config.QDRANT_PATH}")
+        print(f"  metadata.json refreshed at {faiss_meta}")
 
     return n_items, n_chunks, n_vectors
 
@@ -183,14 +217,49 @@ def main():
 
     step += 1
     print(f"\n--- Step {step}: Build Qdrant Index ---")
-    _backup_qdrant(config.QDRANT_PATH, dry_run)
+    old_points = _current_point_count()
+    if old_points:
+        print(f"  Current collection holds {old_points} points.")
+    backup_dir = _backup_qdrant(config.QDRANT_PATH, dry_run)
 
-    result = _build_qdrant_atomic(dry_run)
+    try:
+        result = _build_qdrant_atomic(dry_run)
+    except Exception as exc:
+        print(f"\nABORTED during Qdrant index build: {exc}")
+        result = None
     if result is None:
-        print(f"\nABORTED during Qdrant index build. Backup preserved in {config.QDRANT_PATH}/backup/")
+        if backup_dir:
+            print(f"  Backup preserved at {backup_dir} — restore it manually if needed.")
         sys.exit(1)
 
     n_items, n_chunks, n_vectors = result
+
+    if not dry_run and old_points and n_vectors < old_points:
+        print(f"\n  WARNING: point count dropped ({old_points} → {n_vectors}).")
+        print("  This rebuild indexes chunks.json ONLY — any extra collections")
+        print("  ingested separately (e.g. VIKA QA chunks) are NOT included and")
+        print(f"  must be re-ingested. The previous data is in {backup_dir}.")
+
+    step += 1
+    print(f"\n--- Step {step}: Rebuild BM25 Index ---")
+    # BM25 shares the positional doc-id contract with metadata.json/Qdrant;
+    # after a corpus rebuild it MUST be rebuilt or hybrid retrieval joins a
+    # new corpus against a stale lexical index.
+    bm25_script = os.path.join(os.path.dirname(__file__), "build_bm25.py")
+    if dry_run:
+        print(f"  [DRY-RUN] would run: python {bm25_script}")
+    else:
+        try:
+            r = subprocess.run(
+                [sys.executable, bm25_script],
+                cwd=os.path.join(os.path.dirname(__file__), ".."),
+                timeout=1800,
+            )
+            if r.returncode != 0:
+                print(f"  FAILED: build_bm25.py exited with code {r.returncode}")
+                print("  Hybrid retrieval will fall back to dense-only until fixed.")
+        except subprocess.TimeoutExpired:
+            print("  FAILED: build_bm25.py timed out")
 
     print("\n" + "=" * 60)
     print("Pipeline Complete!")

@@ -7,7 +7,7 @@ Endpoints:
     GET  /analytics  — request statistics (query param: days=7)
 
 Usage:
-    uvicorn src.rag.api:app --host 0.0.0.0 --port 8000 --reload
+    uvicorn src.rag.api:app --host 0.0.0.0 --port 8080 --reload
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from pathlib import Path
+from starlette.concurrency import run_in_threadpool
 
 import config
 from src.rag.answer import answer_question, _get_embedding_model
@@ -90,7 +91,7 @@ async def health():
         from src.embeddings.qdrant_indexer import QdrantIndexer
         qi = QdrantIndexer()
         info = qi.get_collection_info(config.QDRANT_PATH, config.QDRANT_COLLECTION)
-        qdrant_ok = info["status"] == "green" or info["status"] == "green"
+        qdrant_ok = info["status"] in ("green", "yellow")
         qdrant_points = info.get("points_count", 0)
     except Exception:
         pass
@@ -120,7 +121,11 @@ async def health():
 async def ask(req: AskRequest):
     """Answer a question about MIREA using RAG. Every request is logged."""
     try:
-        result = answer_question(req.question, history=req.history)
+        # answer_question is fully synchronous (E5 encode + Qdrant search +
+        # up to 3 LM Studio HTTP calls with 60s timeouts each). Running it on
+        # the event loop would freeze ALL concurrent requests (including
+        # /health) for the duration of generation — offload to the threadpool.
+        result = await run_in_threadpool(answer_question, req.question, history=req.history)
         # Confidence = top retrieval score (heuristic)
         scores = result.get("retrieval_scores", [])
         confidence = scores[0] if scores else 0.0
@@ -134,8 +139,10 @@ async def ask(req: AskRequest):
             confidence=round(confidence, 4),
         )
 
-        # Log the request (fire-and-forget, errors suppressed inside log_request)
-        log_request(
+        # Log the request off the event loop too (synchronous SQLite write;
+        # errors suppressed inside log_request)
+        await run_in_threadpool(
+            log_request,
             question=req.question,
             answer=result["answer"],
             sources=result.get("sources", []),

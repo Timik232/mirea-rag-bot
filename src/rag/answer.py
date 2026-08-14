@@ -77,13 +77,26 @@ SYSTEM_PROMPT = (
     "или факт, просто приведи его.\n\n"
     "Отвечай по существу, дружелюбным тоном. Начинай ответ сразу с "
     "существа дела, без приветствий («Здравствуйте», «Добрый день») и "
-    "без вводных фраз («Я готов ответить», «Используя контекст»)."
+    "без вводных фраз («Я готов ответить», «Используя контекст»). "
+    "Не упоминай в ответе номера источников ([1], [2]...) и фразы вида "
+    "«по данным источника», «в зависимости от источника» — просто приводи "
+    "факты из контекста."
 )
 
 # Minimum similarity score for a chunk to be considered relevant
 RELEVANCE_THRESHOLD = 0.35
 # Maximum chunks to include in context (to fit LM Studio context window)
 MAX_CONTEXT_CHUNKS = 5
+
+# Sections containing real informational content (not VIKA conversational noise).
+# The corpus has ~1400 qa_vika_* chunks (chat-bot dialogues) that pollute dense
+# retrieval. When SECTION_FILTER_ENABLED is on, only chunks from these sections
+# are kept. See config.SECTION_FILTER_ENABLED.
+INFO_SECTIONS: frozenset[str] = frozenset({
+    "applicants", "sveden", "contacts", "dormitories", "employment",
+    "extracurricular", "education", "announcements", "qa_pairs",
+    "student_portal",
+})
 # Hallucination guard — minimum top-1 score for generation (task t_737c1b5e).
 # If the best retrieved chunk scores below this, the pipeline refuses to
 # generate rather than risk a hallucination on weak context. See config.py
@@ -293,8 +306,23 @@ def _retrieve(
     from src.rag.reranker import is_enabled as rerank_enabled, rerank_chunks
 
     do_rerank = rerank_enabled() and query is not None
-    # When re-ranking, over-fetch the candidate shortlist; otherwise just top_k.
-    fetch_k = max(getattr(config, "RERANK_CANDIDATES", 20), top_k) if do_rerank else top_k
+
+    # Section filter (task: noise-filter): the corpus contains ~1400 VIKA
+    # conversational chunks (qa_vika_*) that pollute retrieval for factual
+    # questions. When SECTION_FILTER_ENABLED is True, we over-fetch a larger
+    # candidate pool, drop chunks whose section is not in INFO_SECTIONS, and
+    # keep top_k. This improved retrieval from 0% to 100% relevant on 3/5
+    # multi-hop test questions.
+    section_filter = getattr(config, "SECTION_FILTER_ENABLED", False)
+    pool_multiplier = getattr(config, "SECTION_FILTER_POOL", 5)
+
+    # Over-fetch: when re-ranking or section-filtering, pull a larger pool.
+    if do_rerank:
+        fetch_k = max(getattr(config, "RERANK_CANDIDATES", 20), top_k)
+    elif section_filter:
+        fetch_k = top_k * pool_multiplier
+    else:
+        fetch_k = top_k
 
     mode = getattr(config, "RETRIEVAL_MODE", "dense")
     stage_parts: list[str] = []
@@ -329,13 +357,74 @@ def _retrieve(
         results = rerank_chunks(query, results, top_k=top_k)
         stage_parts.append("cross")
 
-    # Filter by relevance threshold (stage-1 score: dense cosine or hybrid
-    # fused score, both in a comparable [0,1]-ish range).
-    relevant = [r for r in results if r.get("score", 0) >= RELEVANCE_THRESHOLD]
+    # Section noise filter — drop VIKA conversational chunks that flood the
+    # dense index. Applied after retrieval but before threshold filtering.
+    # Exception (dense gate): a non-informational chunk whose absolute dense
+    # cosine clears VIKA_DENSE_GATE survives — some VIKA QA pairs carry real
+    # answers the site sections don't cover (e.g. the full hostel list, which
+    # scores 0.91 for "сколько общежитий" while every site chunk scores
+    # ≤0.87 and is generic). Without the gate the filter trades noise removal
+    # for factual blind spots.
+    if section_filter:
+        vika_gate = getattr(config, "VIKA_DENSE_GATE", 0.88)
+        before = len(results)
+
+        def _is_noise(r: dict) -> bool:
+            if r.get("payload", {}).get("section", "") in INFO_SECTIONS:
+                return False
+            ds = r.get("dense_score")
+            if ds is None:
+                # Dense-only path: score already IS the cosine.
+                ds = r.get("score", 0)
+            return float(ds) < vika_gate
+
+        results = [r for r in results if not _is_noise(r)]
+        stage_parts.append(f"secfilter({before}→{len(results)})")
+        # If filtering was too aggressive (removed everything), fall back to
+        # unfiltered results rather than returning nothing.
+        if not results:
+            try:
+                if mode == "hybrid" and query is not None:
+                    retriever = _get_hybrid_retriever()
+                    results = retriever.search(query_vec, query, top_k=top_k)
+                else:
+                    from src.embeddings.indexer import search_qdrant
+                    results = search_qdrant(query_vec, top_k=top_k)
+            except Exception:
+                pass
+
+    # Restore the top_k contract. The section filter and the rerank pool
+    # over-fetch (fetch_k > top_k), so after filtering we may still hold more
+    # than top_k candidates. Without this truncation the context grows to the
+    # full pool size (observed: 10 chunks instead of 5), which overflows the
+    # LM Studio context budget and produces empty generations on long inputs.
+    results = results[:top_k]
+
+    # Filter by relevance threshold. The score used for thresholding is the
+    # absolute-scale signal (dense cosine when the retriever provides one) —
+    # see _threshold_score for why the fused score cannot be used here.
+    relevant = [r for r in results if _threshold_score(r) >= RELEVANCE_THRESHOLD]
     stage = "+".join(stage_parts)
     logger.info("Retrieved %d chunks [%s], %d above threshold %.2f",
                 len(results), stage, len(relevant), RELEVANCE_THRESHOLD)
     return relevant
+
+
+def _threshold_score(chunk: dict) -> float:
+    """Absolute-scale relevance score for threshold decisions.
+
+    Hybrid RRF fusion min-max normalises scores over the candidate pool, so
+    the fused ``score`` is only rank-comparable *within one query* — the top-1
+    is always 1.0 and the weakest always 0.0, which makes absolute thresholds
+    (RELEVANCE_THRESHOLD, CONFIDENCE_THRESHOLD) meaningless in hybrid mode.
+    ``HybridRetriever`` therefore carries the producing dense cosine through
+    fusion as ``dense_score``; when present it is the calibrated signal the
+    thresholds were fitted on (E5 cosine: ~0.84–0.95 in-domain, ~0.30–0.60
+    out-of-domain). Falls back to ``score`` for dense-only retrieval, where
+    ``score`` already IS the cosine.
+    """
+    ds = chunk.get("dense_score")
+    return float(ds) if ds is not None else float(chunk.get("score", 0))
 
 
 def _check_confidence(chunks: list[dict]) -> tuple[bool, float, str]:
@@ -368,7 +457,7 @@ def _check_confidence(chunks: list[dict]) -> tuple[bool, float, str]:
         passes = top_score >= CE_CONFIDENCE_THRESHOLD
         signal = "ce"
     else:
-        top_score = float(top.get("score", 0))
+        top_score = _threshold_score(top)
         passes = top_score >= CONFIDENCE_THRESHOLD
         signal = "bi"
 
@@ -423,12 +512,22 @@ def _build_messages(query: str, context: str, history: list[dict] | None = None)
     user_content = f"Контекст:\n{context}\n\nВопрос: {query}"
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     if history:
+        # Sanitise client-supplied history defensively: only well-formed
+        # user/assistant turns with bounded content are trusted. Arbitrary
+        # roles (e.g. a forged "system" turn) or unbounded text would flow
+        # straight into the LLM prompt otherwise (prompt injection / context
+        # blow-up).
+        allowed_roles = {"user", "assistant"}
+        clean_history = [
+            {"role": m["role"], "content": str(m.get("content", ""))[:MAX_QUERY_LENGTH]}
+            for m in history[-6:]
+            if isinstance(m, dict)
+            and m.get("role") in allowed_roles
+            and m.get("content")
+        ]
         # Cap at the last 4 messages (≈2 user+assistant pairs) to fit context.
-        for msg in history[-4:]:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            if content:
-                messages.append({"role": role, "content": content})
+        for msg in clean_history[-4:]:
+            messages.append(msg)
     messages.append({"role": "user", "content": user_content})
     return messages
 

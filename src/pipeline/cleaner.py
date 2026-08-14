@@ -106,6 +106,12 @@ def strip_markdown(text: str) -> str:
     """Remove markdown formatting artifacts: bold, italic, headings, links,
     images, tables, blockquotes, horizontal rules, code blocks."""
     cleaned = text
+    # Code blocks FIRST: ``` fences must be removed before inline-code
+    # handling, otherwise the inline `x` regex consumes the fence's own
+    # backticks and the block regex no longer matches (leaking the whole
+    # fenced block + language tag into the corpus).
+    # Code blocks: ```...```
+    cleaned = re.sub(r"```[\s\S]*?```", "", cleaned)
     # Headings: ### Title -> Title
     cleaned = re.sub(r"^#{1,6}\s+", "", cleaned, flags=re.MULTILINE)
     # Images: ![alt](url) -> alt
@@ -123,8 +129,6 @@ def strip_markdown(text: str) -> str:
     cleaned = re.sub(r"(?<!\w)_([^_\n]+)_(?!\w)", r"\1", cleaned)
     # Inline code: `code` -> code
     cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
-    # Code blocks: ```...```
-    cleaned = re.sub(r"```[\s\S]*?```", "", cleaned)
     # Tables: | col | col | and |---|---|
     cleaned = re.sub(r"^\|.*\|$", "", cleaned, flags=re.MULTILINE)
     cleaned = re.sub(r"^\|[-:| ]+\|$", "", cleaned, flags=re.MULTILINE)

@@ -85,6 +85,7 @@ def log_request(
     error: Optional[str] = None,
 ) -> int:
     """Insert a request log entry. Returns the row id."""
+    conn = None
     try:
         conn = _get_conn()
         cur = conn.execute(
@@ -106,12 +107,19 @@ def log_request(
         )
         conn.commit()
         row_id = cur.lastrowid
-        conn.close()
         logger.debug("Logged request #%d: %s", row_id, question[:80])
         return row_id
     except Exception as e:
         logger.error("Failed to log request: %s", e)
         return -1
+    finally:
+        # Always release the connection, including on failure — a leaked
+        # sqlite handle keeps the DB file locked on Windows.
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001 — best-effort cleanup
+                pass
 
 
 def get_analytics(days: int = 7) -> dict:
