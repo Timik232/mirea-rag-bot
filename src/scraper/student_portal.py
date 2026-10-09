@@ -95,8 +95,8 @@ _SPACE_RE = re.compile(r"\s+")
 
 
 def _make_session() -> requests.Session:
-    session = requests.Session()
-    session.trust_env = False
+    from curl_cffi import requests as cffi_requests
+    session = cffi_requests.Session(impersonate="chrome")
     session.headers.update(HEADERS)
     return session
 
@@ -1098,7 +1098,7 @@ if __name__ == "__main__":
     items = scrape_student_portal()
 
     if not items:
-        print("[!] student.mirea.ru unreachable or no data scraped — using demo dataset")
-        items = _demo_dataset()
+        print("[!] student.mirea.ru unreachable or no data scraped — FAILING (no silent demo fallback)")
+        sys.exit(1)
 
     save_items(items, OUTPUT_FILE)

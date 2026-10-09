@@ -31,20 +31,14 @@ HEADERS = {
 
 SUBPAGES = [
     ("/", "Главная"),
-    ("/ru/priem/", "Приёмная кампания"),
-    ("/ru/priem/bakalavriat-i-specialitet/", "Бакалавриат и специалитет"),
-    ("/ru/priem/magistratura/", "Магистратура"),
-    ("/ru/priem/aspirantura/", "Аспирантура"),
-    ("/ru/priem/prohodnye-bally/", "Проходные баллы"),
-    ("/ru/priem/dokumenty/", "Документы"),
-    ("/ru/priem/sroki/", "Сроки приёма"),
-    ("/ru/priem/kontakty/", "Контакты приёмной комиссии"),
-    ("/ru/priem/vopros-otvet/", "Вопрос-ответ"),
-    ("/ru/priem/stoimost-obucheniya/", "Стоимость обучения"),
-    ("/ru/priem/obshchezhitie/", "Общежитие"),
-    ("/ru/priem/podgotovitelnye-kursy/", "Подготовительные курсы"),
-    ("/ru/priem/olimpiady/", "Олимпиады"),
-    ("/ru/priem/tselye-priem/", "Целевой приём"),
+    ("/first-degree", "Бакалавриат и специалитет"),
+    ("/first-degree/admission-features", "Особенности приёма"),
+    ("/first-degree/after-college", "После колледжа"),
+    ("/first-degree/enrollment-order/competition", "Конкурс приказа о зачислении"),
+    ("/about/instituty", "Институты"),
+    ("/about/grants", "Стипендии и гранты"),
+    ("/about/specscholarship", "Особые стипендии"),
+    ("/contacts", "Контакты приёмной комиссии"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -148,8 +142,8 @@ def _safe_get(session: requests.Session, url: str) -> BeautifulSoup | None:
 
 def scrape_applicants() -> list[dict[str, Any]]:
     """Scrape priem.mirea.ru and return a list of structured items."""
-    session = requests.Session()
-    session.trust_env = False
+    from curl_cffi import requests as cffi_requests
+    session = cffi_requests.Session(impersonate="chrome")
     items: list[dict[str, Any]] = []
 
     for path, subsection in SUBPAGES:
@@ -259,13 +253,13 @@ def main() -> None:
     print("=" * 60)
 
     if not _is_reachable(BASE_URL):
-        print("[!] mirea.ru unreachable — generating demo data")
-        items = _demo_data()
-    else:
-        items = scrape_applicants()
-        if not items:
-            print("[!] No items scraped — generating demo data")
-            items = _demo_data()
+        print("[!] mirea.ru unreachable — FAILING (no silent demo fallback)")
+        sys.exit(1)
+
+    items = scrape_applicants()
+    if not items:
+        print("[!] No items scraped — FAILING (no silent demo fallback)")
+        sys.exit(1)
 
     out_path = _output_dir() / "applicants.json"
     out_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")

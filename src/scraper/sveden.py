@@ -13,6 +13,11 @@ from typing import Any
 import requests
 from bs4 import BeautifulSoup, Tag
 
+# mirea.ru anti-bot rejects python-requests TLS fingerprint after a few
+# requests (HTTP 403). curl_cffi with browser impersonation passes reliably.
+from curl_cffi import requests as cffi_requests
+from curl_cffi.requests.exceptions import RequestException as CffiRequestException
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 import config
 from src.scraper._binary_guard import is_binary_url, is_binary_response, has_binary_content
@@ -22,7 +27,7 @@ from src.scraper._binary_guard import is_binary_url, is_binary_response, has_bin
 # ---------------------------------------------------------------------------
 BASE_URL = "https://www.mirea.ru"
 SECTION = "sveden"
-DELAY = 1.5
+DELAY = 5.0
 MAX_RETRIES = 3
 HEADERS = {
     "User-Agent": (
@@ -36,22 +41,18 @@ HEADERS = {
 
 SUBPAGES = [
     ("/sveden/", "Основные сведения"),
-    ("/sveden/education/", "Образовательные программы"),
-    ("/sveden/education/op/","Образовательные программы — подробнее"),
-    ("/sveden/struct/", "Структура и органы управления"),
-    ("/sveden/struct/podrazdeleniya/", "Подразделения"),
-    ("/sveden/objects/", "Объекты инфраструктуры"),
-    ("/sveden/objects/bassejn/", "Бассейн"),
-    ("/sveden/employees/", "Руководство и сотрудники"),
-    ("/sveden/grants/", "Гранты и проекты"),
-    ("/sveden/ovz/", "Доступная среда"),
-    ("/sveden/inter/", "Международное сотрудничество"),
-    ("/sveden/vacancy/", "Вакансии"),
-    ("/sveden/account/", "Финансово-хозяйственная деятельность"),
-    ("/sveden/document/", "Документы"),
-    ("/sveden/zashchita-prav/", "Защита прав обучающихся"),
-    ("/sveden/paid-edu/", "Платные образовательные услуги"),
-    ("/sveden/quality/", "Качество подготовки"),
+    ("/sveden/common", "Общие сведения"),
+    ("/sveden/education", "Образовательные программы"),
+    ("/sveden/struct", "Структура и органы управления"),
+    ("/sveden/managers", "Руководство"),
+    ("/sveden/employees", "Руководство и сотрудники"),
+    ("/sveden/objects", "Объекты инфраструктуры"),
+    ("/sveden/grants", "Гранты и проекты"),
+    ("/sveden/inter", "Международное сотрудничество"),
+    ("/sveden/vacant", "Вакансии"),
+    ("/sveden/budget", "Финансово-хозяйственная деятельность"),
+    ("/sveden/document", "Документы"),
+    ("/sveden/catering", "Питание"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -78,16 +79,44 @@ def _strip_noise(soup: BeautifulSoup) -> None:
         ["nav", "footer", "header", "script", "style", "noscript", "aside"]
     ):
         tag.decompose()
-    for tag in soup.find_all(class_=re.compile(
-        r"nav|menu|footer|header|sidebar|breadcrumb|social|cookie|banner|modal",
+    # NOTE: the old pattern r"nav|menu|footer|header|..." matched substrings
+    # anywhere in class/id names. On the current mirea.ru markup the page
+    # content is wrapped in <div id="header_height">, so the old regex
+    # decomposed the ENTIRE page body. Use anchored patterns that match
+    # whole tokens (class list / id value), not substrings.
+    noise_re = re.compile(
+        r"^(?:nav|menu|footer|header|sidebar|breadcrumb|social|cookie|banner|modal)$",
         re.I,
-    )):
-        tag.decompose()
-    for tag in soup.find_all(id=re.compile(
-        r"nav|menu|footer|header|sidebar|breadcrumb|social|cookie|banner|modal",
+    )
+    token_re = re.compile(
+        r"^(?:[a-z-]*-)?(?:nav|menu|footer|header|sidebar|breadcrumb|social|cookie|banner|modal)(?:-[a-z-]+)?$",
         re.I,
-    )):
-        tag.decompose()
+    )
+
+    def _is_noise(tag) -> bool:
+        # Never touch table internals: rows may carry classes like
+        # "table-header" that otherwise match the token pattern.
+        if tag.name in ("table", "thead", "tbody", "tfoot", "tr", "td", "th"):
+            return False
+        for cls in tag.get("class", []):
+            if noise_re.match(cls) or token_re.match(cls):
+                return True
+        tag_id = tag.get("id")
+        if tag_id and (noise_re.match(tag_id) or token_re.match(tag_id)):
+            return True
+        return False
+
+    # Decompose noise tags; iterate to fixpoint because decomposing a
+    # parent detaches children (they may never be visited again).
+    for _ in range(3):
+        targets = [t for t in soup.find_all(True) if t is not None and _is_noise(t)]
+        if not targets:
+            break
+        for tag in targets:
+            try:
+                tag.decompose()
+            except Exception:
+                pass
 
 
 def _parse_table(table: Tag) -> list[str]:
@@ -115,14 +144,15 @@ def _parse_table(table: Tag) -> list[str]:
 
 def _is_reachable(url: str, timeout: int = 5) -> bool:
     try:
-        resp = requests.head(url, headers=HEADERS, timeout=timeout, allow_redirects=True,
-                             proxies={"http": None, "https": None})
+        resp = cffi_requests.head(
+            url, impersonate="chrome", timeout=timeout, allow_redirects=True
+        )
         return resp.status_code < 500
-    except requests.RequestException:
+    except Exception:
         return False
 
 
-def _safe_get(session: requests.Session, url: str) -> BeautifulSoup | None:
+def _safe_get(session, url: str) -> BeautifulSoup | None:
     for attempt in range(MAX_RETRIES):
         try:
             resp = session.get(url, headers=HEADERS, timeout=20)
@@ -143,7 +173,7 @@ def _safe_get(session: requests.Session, url: str) -> BeautifulSoup | None:
                 print(f"  [skip] binary content detected: {url}")
                 return None
             return BeautifulSoup(resp.text, "lxml")
-        except requests.RequestException as exc:
+        except CffiRequestException as exc:
             print(f"  [error] {url} → {exc}")
             if attempt < MAX_RETRIES - 1:
                 time.sleep((2 ** attempt) * 3)
@@ -170,8 +200,7 @@ def _extract_links_on_page(soup: BeautifulSoup, base_url: str) -> list[str]:
 
 def scrape_sveden() -> list[dict[str, Any]]:
     """Scrape www.mirea.ru/sveden/ and return structured items."""
-    session = requests.Session()
-    session.trust_env = False
+    session = cffi_requests.Session(impersonate="chrome")
     items: list[dict[str, Any]] = []
 
     for path, subsection in SUBPAGES:
@@ -317,13 +346,13 @@ def main() -> None:
     print("=" * 60)
 
     if not _is_reachable(BASE_URL):
-        print("[!] mirea.ru unreachable — generating demo data")
-        items = _demo_data()
-    else:
-        items = scrape_sveden()
-        if not items:
-            print("[!] No items scraped — generating demo data")
-            items = _demo_data()
+        print("[!] mirea.ru unreachable — FAILING (no silent demo fallback)")
+        sys.exit(1)
+
+    items = scrape_sveden()
+    if not items:
+        print("[!] No items scraped — FAILING (no silent demo fallback)")
+        sys.exit(1)
 
     out_path = _output_dir() / "sveden.json"
     out_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")

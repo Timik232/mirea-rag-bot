@@ -12,12 +12,16 @@ from typing import Any
 import requests
 from bs4 import BeautifulSoup, Tag
 
+# mirea.ru anti-bot rejects python-requests TLS fingerprint (HTTP 403).
+from curl_cffi import requests as cffi_requests
+from curl_cffi.requests.exceptions import RequestException as CffiRequestException
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 BASE_URL = "https://www.mirea.ru"
 SECTION = "contacts"
-DELAY = 1.5
+DELAY = 5.0
 MAX_RETRIES = 3
 HEADERS = {
     "User-Agent": (
@@ -60,16 +64,39 @@ def _strip_noise(soup: BeautifulSoup) -> None:
         ["nav", "footer", "header", "script", "style", "noscript", "aside"]
     ):
         tag.decompose()
-    for tag in soup.find_all(class_=re.compile(
-        r"nav|menu|footer|header|sidebar|breadcrumb|social|cookie|banner|modal",
+    # NOTE: substring patterns like r"nav|menu|footer|header|..." used to
+    # decompose the entire page on mirea.ru because the content is wrapped
+    # in <div id="header_height">. Match whole tokens only, and never touch
+    # table internals ("table-header" rows are legitimate content).
+    noise_re = re.compile(
+        r"^(?:nav|menu|footer|header|sidebar|breadcrumb|social|cookie|banner|modal)$",
         re.I,
-    )):
-        tag.decompose()
-    for tag in soup.find_all(id=re.compile(
-        r"nav|menu|footer|header|sidebar|breadcrumb|social|cookie|banner|modal",
+    )
+    token_re = re.compile(
+        r"^(?:[a-z-]*-)?(?:nav|menu|footer|header|sidebar|breadcrumb|social|cookie|banner|modal)(?:-[a-z-]+)?$",
         re.I,
-    )):
-        tag.decompose()
+    )
+
+    def _is_noise(tag) -> bool:
+        if tag.name in ("table", "thead", "tbody", "tfoot", "tr", "td", "th"):
+            return False
+        for cls in tag.get("class", []):
+            if noise_re.match(cls) or token_re.match(cls):
+                return True
+        tag_id = tag.get("id")
+        if tag_id and (noise_re.match(tag_id) or token_re.match(tag_id)):
+            return True
+        return False
+
+    for _ in range(3):
+        targets = [t for t in soup.find_all(True) if t is not None and _is_noise(t)]
+        if not targets:
+            break
+        for tag in targets:
+            try:
+                tag.decompose()
+            except Exception:
+                pass
 
 
 def _parse_table(table: Tag) -> list[str]:
@@ -97,14 +124,15 @@ def _parse_table(table: Tag) -> list[str]:
 
 def _is_reachable(url: str, timeout: int = 5) -> bool:
     try:
-        resp = requests.head(url, headers=HEADERS, timeout=timeout, allow_redirects=True,
-                             proxies={"http": None, "https": None})
+        resp = cffi_requests.head(
+            url, impersonate="chrome", timeout=timeout, allow_redirects=True
+        )
         return resp.status_code < 500
-    except requests.RequestException:
+    except Exception:
         return False
 
 
-def _safe_get(session: requests.Session, url: str) -> BeautifulSoup | None:
+def _safe_get(session, url: str) -> BeautifulSoup | None:
     for attempt in range(MAX_RETRIES):
         try:
             resp = session.get(url, headers=HEADERS, timeout=20)
@@ -118,7 +146,7 @@ def _safe_get(session: requests.Session, url: str) -> BeautifulSoup | None:
                 print(f"  [skip] {url} → HTTP {resp.status_code}")
                 return None
             return BeautifulSoup(resp.text, "lxml")
-        except requests.RequestException as exc:
+        except CffiRequestException as exc:
             print(f"  [error] {url} → {exc}")
             if attempt < MAX_RETRIES - 1:
                 time.sleep((2 ** attempt) * 3)
@@ -224,8 +252,7 @@ def _extract_contacts(soup: BeautifulSoup, url: str, subsection: str) -> list[di
 
 def scrape_contacts() -> list[dict[str, Any]]:
     """Scrape www.mirea.ru/contacts/ and return structured items."""
-    session = requests.Session()
-    session.trust_env = False
+    session = cffi_requests.Session(impersonate="chrome")
     items: list[dict[str, Any]] = []
 
     for path, subsection in SUBPAGES:
@@ -281,13 +308,13 @@ def main() -> None:
     print("=" * 60)
 
     if not _is_reachable(BASE_URL):
-        print("[!] mirea.ru unreachable — generating demo data")
-        items = _demo_data()
-    else:
-        items = scrape_contacts()
-        if not items:
-            print("[!] No items scraped — generating demo data")
-            items = _demo_data()
+        print("[!] mirea.ru unreachable — FAILING (no silent demo fallback)")
+        sys.exit(1)
+
+    items = scrape_contacts()
+    if not items:
+        print("[!] No items scraped — FAILING (no silent demo fallback)")
+        sys.exit(1)
 
     out_path = _output_dir() / "contacts.json"
     out_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -60,17 +60,24 @@ HEADERS = {
 # Session helpers
 # ---------------------------------------------------------------------------
 
-def _make_session() -> requests.Session:
-    """Create a persistent session for cookie handling (DDoS-Guard WAF)."""
-    session = requests.Session()
-    session.trust_env = False
+def _make_session():
+    """Create a persistent session for cookie handling (DDoS-Guard WAF).
+
+    Uses curl_cffi with browser TLS impersonation: mirea.ru anti-bot rejects
+    the python-requests TLS fingerprint with HTTP 403 after a few requests.
+    """
+    from curl_cffi import requests as cffi_requests
+
+    session = cffi_requests.Session(impersonate="chrome")
     session.headers.update(HEADERS)
     return session
 
 
-def _fetch(session: requests.Session, url: str, retries: int = MAX_RETRIES
-           ) -> Optional[requests.Response]:
+def _fetch(session, url: str, retries: int = MAX_RETRIES
+           ) -> Optional[object]:
     """GET with exponential backoff on 403/503/502 (DDoS-Guard challenges)."""
+    from curl_cffi.requests.exceptions import RequestException as CffiRequestException
+
     for attempt in range(retries):
         try:
             resp = session.get(url, timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT), allow_redirects=True)
@@ -80,10 +87,7 @@ def _fetch(session: requests.Session, url: str, retries: int = MAX_RETRIES
                 time.sleep(wait)
                 continue
             return resp
-        except requests.ConnectionError:
-            print(f"  [SKIP] connection refused: {url}")
-            return None
-        except requests.RequestException as exc:
+        except Exception as exc:
             if attempt < retries - 1:
                 wait = BACKOFF_BASE * (2 ** attempt)
                 print(f"  [retry {attempt+1}] {type(exc).__name__} for {url}, waiting {wait}s")
@@ -478,9 +482,8 @@ if __name__ == "__main__":
 
     items = scrape_education()
 
-    # Fall back to demo dataset if live scraping yielded nothing
     if not items:
-        print("[!] mirea.ru unreachable or no data scraped — using demo dataset")
-        items = _demo_dataset()
+        print("[!] mirea.ru unreachable or no data scraped — FAILING (no silent demo fallback)")
+        sys.exit(1)
 
     save_items(items, OUTPUT_FILE)

@@ -41,8 +41,10 @@ ACCEPTABLE_CONTENT_TYPES = frozenset({
 # Threshold for binary content detection in text
 # If > this fraction of characters are non-printable, it's binary garbage
 _BINARY_CHAR_THRESHOLD = 0.10
-# Texts longer than this are suspicious (real pages are rarely > 50k chars)
-_MAX_TEXT_LENGTH = 100_000
+# Raw HTML pages (before tag stripping) routinely reach several MB
+# (e.g. /sveden/employees/ is a ~4 MB staff table). The length cap exists
+# only as a sanity bound, so it must sit well above any real page size.
+_MAX_TEXT_LENGTH = 10_000_000
 
 
 def is_binary_url(url: str) -> bool:

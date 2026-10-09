@@ -55,7 +55,12 @@ def load_json(path: str) -> list[tuple[str, str]]:
         data: list[dict[str, str]] = json.load(f)
     if not isinstance(data, list):
         raise ValueError("JSON must be an array of objects")
-    return [(item.get("question", ""), item.get("answer", "")) for item in data]
+    pairs: list[tuple[str, str]] = []
+    for item in data:
+        q = item.get("question") or item.get("title") or ""
+        a = item.get("answer") or item.get("text") or ""
+        pairs.append((q, a))
+    return pairs
 
 
 def load_csv(path: str) -> list[tuple[str, str]]:
@@ -210,8 +215,8 @@ def main():
         raw_pairs = load_qa_pairs(input_path)
         print(f"Loaded data from {input_path}")
     else:
-        raw_pairs = create_demo_data()
-        print(f"Input file '{input_path}' not found, using demo dataset")
+        print(f"Input file '{input_path}' not found — FAILING (no silent demo fallback)")
+        sys.exit(1)
 
     total = len(raw_pairs)
 
