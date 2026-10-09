@@ -12,7 +12,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.scraper.deeper_scraper import (
     SECTIONS,
-    _demo_dataset,
     _clean_text,
     _parse_table,
     _remove_noise,
@@ -20,65 +19,6 @@ from src.scraper.deeper_scraper import (
     save_items,
 )
 import config
-
-
-# ---------------------------------------------------------------------------
-# Demo dataset tests
-# ---------------------------------------------------------------------------
-
-class TestDemoDataset:
-    """Verify demo fallback data quality."""
-
-    @pytest.fixture(scope="class")
-    def demo_items(self):
-        return _demo_dataset()
-
-    def test_demo_has_minimum_items(self, demo_items):
-        """Demo dataset must have 25+ items total."""
-        assert len(demo_items) >= 25, f"Expected >= 25 items, got {len(demo_items)}"
-
-    def test_demo_covers_all_sections(self, demo_items):
-        """All 5 sections must be present."""
-        sections_found = {item["section"] for item in demo_items}
-        expected = {"grants", "dormitories", "employment", "extracurricular", "announcements"}
-        assert sections_found == expected, f"Missing sections: {expected - sections_found}"
-
-    def test_demo_min_items_per_section(self, demo_items):
-        """Each section must have 5+ items."""
-        from collections import Counter
-        counts = Counter(item["section"] for item in demo_items)
-        for section, count in counts.items():
-            assert count >= 5, f"Section '{section}' has only {count} items (need >= 5)"
-
-    def test_demo_item_schema(self, demo_items):
-        """Each item must have all required keys with non-empty values."""
-        required_keys = {"title", "text", "url", "section", "subsection"}
-        for i, item in enumerate(demo_items):
-            assert required_keys.issubset(item.keys()), \
-                f"Item {i} missing keys: {required_keys - item.keys()}"
-            assert item["title"].strip(), f"Item {i} has empty title"
-            assert item["text"].strip(), f"Item {i} has empty text"
-            assert item["url"].strip(), f"Item {i} has empty url"
-            assert item["section"].strip(), f"Item {i} has empty section"
-            assert item["subsection"].strip(), f"Item {i} has empty subsection"
-
-    def test_demo_urls_valid(self, demo_items):
-        """All URLs must start with https://www.mirea.ru."""
-        for i, item in enumerate(demo_items):
-            assert item["url"].startswith("https://www.mirea.ru/"), \
-                f"Item {i} has invalid URL: {item['url']}"
-
-    def test_demo_sections_match_expected_names(self, demo_items):
-        """Section names must match exactly the 5 required names."""
-        expected_sections = {"grants", "dormitories", "employment", "extracurricular", "announcements"}
-        actual_sections = {item["section"] for item in demo_items}
-        assert actual_sections == expected_sections
-
-    def test_demo_text_is_russian(self, demo_items):
-        """Text content should contain Cyrillic characters."""
-        for i, item in enumerate(demo_items):
-            has_cyrillic = any("\u0400" <= c <= "\u04FF" for c in item["text"])
-            assert has_cyrillic, f"Item {i} text has no Cyrillic: {item['text'][:60]}"
 
 
 # ---------------------------------------------------------------------------
@@ -196,24 +136,20 @@ class TestScrapeDeeper:
         items = scrape_deeper()
         assert isinstance(items, list)
 
-    def test_demo_fallback_produces_items(self):
+    def test_live_scrape_produces_items(self):
+        # Silent demo fallback was REMOVED (2026-10): a live scrape must
+        # return real items; empty result must fail loudly in main().
         items = scrape_deeper()
-        if not items:
-            items = _demo_dataset()
-        assert len(items) >= 25, f"Expected >= 25 items, got {len(items)}"
+        assert len(items) >= 1, "Live scrape returned no items; scraper must fail loudly"
 
     def test_pipeline_items_have_schema(self):
         items = scrape_deeper()
-        if not items:
-            items = _demo_dataset()
         required = {"title", "text", "url", "section", "subsection"}
         for item in items:
             assert required.issubset(item.keys())
 
     def test_pipeline_covers_all_sections(self):
         items = scrape_deeper()
-        if not items:
-            items = _demo_dataset()
         sections = {item["section"] for item in items}
         expected = {"grants", "dormitories", "employment", "extracurricular", "announcements"}
         assert sections == expected

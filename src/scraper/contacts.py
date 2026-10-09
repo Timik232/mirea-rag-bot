@@ -276,28 +276,6 @@ def scrape_contacts() -> list[dict[str, Any]]:
 # Demo data
 # ---------------------------------------------------------------------------
 
-def _demo_data() -> list[dict[str, Any]]:
-    return [
-        {"title": "Контакты", "text": "Адрес: г. Москва, ул. Стромынка, д. 20 — главный учебный корпус РТУ МИРЭА. Проезд: ст. метро «Сокольники».", "url": "https://www.mirea.ru/contacts/", "section": SECTION, "subsection": "Контакты"},
-        {"title": "Контакты", "text": "Адрес: г. Москва, проспект Вернадского, д. 78 — учебно-лабораторный корпус. Проезд: ст. метро «Юго-Западная».", "url": "https://www.mirea.ru/contacts/", "section": SECTION, "subsection": "Контакты"},
-        {"title": "Контакты", "text": "Адрес: г. Москва, ул. Малая Пироговская, д. 1, стр. 5 — учебный корпус Института тонких химических технологий.", "url": "https://www.mirea.ru/contacts/", "section": SECTION, "subsection": "Контакты"},
-        {"title": "Контакты", "text": "Адрес: г. Москва, 5-я Кабельная, д. 12А — учебно-производственный корпус.", "url": "https://www.mirea.ru/contacts/", "section": SECTION, "subsection": "Контакты"},
-        {"title": "Контакты", "text": "Адрес: г. Москва, ул. Нежинская, д. 7 — филиал Ломоносовский университет.", "url": "https://www.mirea.ru/contacts/", "section": SECTION, "subsection": "Контакты"},
-        {"title": "Контакты", "text": "Адрес: г. Москва, ул. Б. Галушкина, д. 3 — общежитие №1 для студентов. Станция метро «ВДНХ».", "url": "https://www.mirea.ru/contacts/", "section": SECTION, "subsection": "Контакты"},
-        {"title": "Приёмная комиссия", "text": "Телефон: +7 (495) 215-65-65. Приёмная комиссия РТУ МИРЭА осуществляет консультирование абитуриентов по вопросам поступления.", "url": "https://www.mirea.ru/contacts/priemnaya-komissiya/", "section": SECTION, "subsection": "Приёмная комиссия"},
-        {"title": "Приёмная комиссия", "text": "Email: priem@mirea.ru. Приём документов осуществляется в корпусе на ул. Стромынка, д. 20, каб. 306.", "url": "https://www.mirea.ru/contacts/priemnaya-komissiya/", "section": SECTION, "subsection": "Приёмная комиссия"},
-        {"title": "Приёмная комиссия", "text": "Горячая линия приёмной кампании: 8 (800) 550-00-65 (бесплатный номер для регионов). Режим работы: пн–пт 9:00–18:00.", "url": "https://www.mirea.ru/contacts/priemnaya-komissiya/", "section": SECTION, "subsection": "Приёмная комиссия"},
-        {"title": "Контакты", "text": "Телефон: +7 (495) 215-65-65 — общий справочный телефон университета. Режим работы: пн-пт 9:00–18:00.", "url": "https://www.mirea.ru/contacts/", "section": SECTION, "subsection": "Контакты"},
-        {"title": "Контакты", "text": "Email: info@mirea.ru — общая справочная служба РТУ МИРЭА.", "url": "https://www.mirea.ru/contacts/", "section": SECTION, "subsection": "Контакты"},
-        {"title": "Структурные подразделения", "text": "Институт информационных технологий: +7 (495) 215-65-65 доб. 3101. Адрес: ул. Стромынка, д. 20, ауд. 401.", "url": "https://www.mirea.ru/contacts/strukturnye-podrazdeleniya/", "section": SECTION, "subsection": "Структурные подразделения"},
-        {"title": "Структурные подразделения", "text": "Институт кибербезопасности: +7 (495) 215-65-65 доб. 3201. Адрес: ул. Стромынка, д. 20, ауд. 502.", "url": "https://www.mirea.ru/contacts/strukturnye-podrazdeleniya/", "section": SECTION, "subsection": "Структурные подразделения"},
-        {"title": "Структурные подразделения", "text": "Институт радиотехнических и телекоммуникационных систем: +7 (495) 215-65-65 доб. 3301. Адрес: пр. Вернадского, д. 78.", "url": "https://www.mirea.ru/contacts/strukturnye-podrazdeleniya/", "section": SECTION, "subsection": "Структурные подразделения"},
-        {"title": "Структурные подразделения", "text": "Институт тонких химических технологий: Email: ihti@mirea.ru. Адрес: ул. Малая Пироговская, д. 1, стр. 5.", "url": "https://www.mirea.ru/contacts/strukturnye-podrazdeleniya/", "section": SECTION, "subsection": "Структурные подразделения"},
-        {"title": "Деканы институтов", "text": "Декан Института информационных технологий: телефон +7 (495) 215-65-65 доб. 3101. Кабинет: корпус Стромынка, д. 20, ауд. 401.", "url": "https://www.mirea.ru/contacts/dekany/", "section": SECTION, "subsection": "Деканы институтов"},
-        {"title": "Деканы институтов", "text": "Декан Института кибербезопасности: телефон +7 (495) 215-65-65 доб. 3201. Приёмные часы: вторник, четверг 14:00–17:00.", "url": "https://www.mirea.ru/contacts/dekany/", "section": SECTION, "subsection": "Деканы институтов"},
-    ]
-
-
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------

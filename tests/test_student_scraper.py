@@ -11,7 +11,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.scraper.student_portal import (
     SECTIONS,
-    _demo_dataset,
     _clean_text,
     _parse_table,
     _remove_noise,
@@ -20,74 +19,6 @@ from src.scraper.student_portal import (
     BASE_URL,
 )
 import config
-
-
-# ---------------------------------------------------------------------------
-# Demo dataset tests
-# ---------------------------------------------------------------------------
-
-class TestDemoDataset:
-    """Verify demo fallback data quality."""
-
-    @pytest.fixture(scope="class")
-    def demo_items(self):
-        return _demo_dataset()
-
-    def test_demo_has_minimum_items(self, demo_items):
-        """Demo dataset must have 70+ items total (10+ per section, 7 sections)."""
-        assert len(demo_items) >= 70, f"Expected >= 70 items, got {len(demo_items)}"
-
-    def test_demo_covers_all_sections(self, demo_items):
-        """All 7 required subsections must be present."""
-        subsections_found = {item["subsection"] for item in demo_items}
-        expected = {
-            "Стипендии и социальные выплаты",
-            "Общежития",
-            "Трудоустройство",
-            "Студенческая наука",
-            "Нормативные документы",
-            "Студенческие объединения",
-            "Психологическая служба",
-        }
-        assert expected.issubset(subsections_found), \
-            f"Missing subsections: {expected - subsections_found}"
-
-    def test_demo_min_items_per_section(self, demo_items):
-        """Each section must have 10+ items."""
-        from collections import Counter
-        counts = Counter(item["subsection"] for item in demo_items)
-        for section, count in counts.items():
-            assert count >= 10, f"Section '{section}' has only {count} items (need >= 10)"
-
-    def test_demo_item_schema(self, demo_items):
-        """Each item must have all required keys with non-empty values."""
-        required_keys = {"title", "text", "url", "section", "subsection"}
-        for i, item in enumerate(demo_items):
-            assert required_keys.issubset(item.keys()), \
-                f"Item {i} missing keys: {required_keys - item.keys()}"
-            assert item["title"].strip(), f"Item {i} has empty title"
-            assert item["text"].strip(), f"Item {i} has empty text"
-            assert item["url"].strip(), f"Item {i} has empty url"
-            assert item["section"].strip(), f"Item {i} has empty section"
-            assert item["subsection"].strip(), f"Item {i} has empty subsection"
-
-    def test_demo_urls_valid(self, demo_items):
-        """All URLs must start with https://student.mirea.ru."""
-        for i, item in enumerate(demo_items):
-            assert item["url"].startswith("https://student.mirea.ru/"), \
-                f"Item {i} has invalid URL: {item['url']}"
-
-    def test_demo_section_is_student_portal(self, demo_items):
-        """All items must have section='student_portal'."""
-        for i, item in enumerate(demo_items):
-            assert item["section"] == "student_portal", \
-                f"Item {i} has wrong section: {item['section']}"
-
-    def test_demo_text_is_russian(self, demo_items):
-        """Text content should contain Cyrillic characters."""
-        for i, item in enumerate(demo_items):
-            has_cyrillic = any("\u0400" <= c <= "\u04FF" for c in item["text"])
-            assert has_cyrillic, f"Item {i} text has no Cyrillic: {item['text'][:60]}"
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +141,7 @@ class TestScrapeStudentPortal:
         items = scrape_student_portal()
         assert isinstance(items, list)
 
-    def test_demo_fallback_produces_items(self):
+    def test_live_scrape_produces_items(self):
         # Silent demo fallback was REMOVED (2026-10): a live scrape must
         # return real items; empty result now means the scraper must fail
         # loudly in main(). The old "fall back to demo" behaviour caused the
@@ -220,16 +151,12 @@ class TestScrapeStudentPortal:
 
     def test_pipeline_items_have_schema(self):
         items = scrape_student_portal()
-        if not items:
-            items = _demo_dataset()
         required = {"title", "text", "url", "section", "subsection"}
         for item in items:
             assert required.issubset(item.keys())
 
     def test_pipeline_section_is_student_portal(self):
         items = scrape_student_portal()
-        if not items:
-            items = _demo_dataset()
         for item in items:
             assert item["section"] == "student_portal"
 
