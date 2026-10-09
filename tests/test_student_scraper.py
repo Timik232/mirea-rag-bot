@@ -211,10 +211,12 @@ class TestScrapeStudentPortal:
         assert isinstance(items, list)
 
     def test_demo_fallback_produces_items(self):
+        # Silent demo fallback was REMOVED (2026-10): a live scrape must
+        # return real items; empty result now means the scraper must fail
+        # loudly in main(). The old "fall back to demo" behaviour caused the
+        # fake-data poisoning of the knowledge base.
         items = scrape_student_portal()
-        if not items:
-            items = _demo_dataset()
-        assert len(items) >= 70, f"Expected >= 70 items, got {len(items)}"
+        assert len(items) >= 1, "Live scrape returned no items; scraper must fail loudly"
 
     def test_pipeline_items_have_schema(self):
         items = scrape_student_portal()

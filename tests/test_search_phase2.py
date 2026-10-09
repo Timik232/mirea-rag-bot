@@ -89,12 +89,12 @@ class TestQdrantInfrastructure:
             assert required.issubset(r["payload"].keys()), \
                 f"Missing fields: {required - r['payload'].keys()}"
 
-    def test_203_vectors_in_collection(self):
-        """Collection should have 203 vectors (built in T7)."""
+    def test_vectors_in_collection(self):
+        """Collection must be green and non-trivial (rebuilt 2026-10: 5090 pts)."""
         from src.embeddings.qdrant_indexer import QdrantIndexer
         qi = QdrantIndexer()
         info = qi.get_collection_info(config.QDRANT_PATH, config.QDRANT_COLLECTION)
-        assert info["points_count"] == 203, f"Expected 203, got {info['points_count']}"
+        assert info["points_count"] >= 1000, f"Expected >= 1000, got {info['points_count']}"
         assert info["status"] == "green"
 
 

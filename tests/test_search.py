@@ -80,7 +80,10 @@ class TestInfrastructure:
         assert os.path.exists(os.path.join(config.DATA_FAISS_DIR, "metadata.json"))
 
     def test_metadata_has_entries(self, metadata):
-        assert len(metadata) == 52
+        # Dataset was rebuilt from the live site (2026-10): 5090 chunks.
+        # Assert a healthy floor rather than an exact size so the test
+        # survives future rebuilds.
+        assert len(metadata) >= 1000, f"Expected >= 1000 chunks, got {len(metadata)}"
 
     def test_search_returns_valid_shapes(self, model):
         vec = _encode_query(model, "МИРЭА")
@@ -103,11 +106,12 @@ class TestInfrastructure:
         scores = list(distances[0])
         assert scores == sorted(scores, reverse=True)
 
-    def test_indices_within_range(self, model):
+    def test_indices_within_range(self, model, metadata):
         vec = _encode_query(model, "институт")
         distances, indices = search(vec, top_k=3)
+        n = len(metadata)
         for idx in indices[0]:
-            assert 0 <= int(idx) < 52
+            assert 0 <= int(idx) < n
 
 
 # ── Semantic relevance tests (10 queries) ────────────────────────────────
@@ -233,13 +237,13 @@ class TestEdgeCases:
         assert distances.shape == (1, 1)
         assert indices.shape == (1, 1)
 
-    def test_top_k_exceeds_index(self, model):
+    def test_top_k_exceeds_index(self, model, metadata):
         """top_k larger than index size should not crash."""
         vec = _encode_query(model, "университет")
         distances, indices = search(vec, top_k=200)
         assert distances.shape[0] == 1
-        # Should return at most 52 results (index size)
-        assert distances.shape[1] <= 52
+        # Should return at most len(metadata) results (index size)
+        assert distances.shape[1] <= len(metadata)
 
     def test_score_consistency(self, model):
         """Same query twice should give same results."""

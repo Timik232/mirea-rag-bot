@@ -107,10 +107,13 @@ def _parse_table(table: Tag) -> list[str]:
 
 def _is_reachable(url: str, timeout: int = 5) -> bool:
     try:
-        resp = requests.head(url, headers=HEADERS, timeout=timeout, allow_redirects=True,
-                             proxies={"http": None, "https": None})
+        from curl_cffi import requests as cffi_requests
+
+        resp = cffi_requests.head(
+            url, impersonate="chrome", timeout=timeout, allow_redirects=True
+        )
         return resp.status_code < 500
-    except requests.RequestException:
+    except Exception:
         return False
 
 
