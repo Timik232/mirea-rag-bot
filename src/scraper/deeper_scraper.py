@@ -53,7 +53,7 @@ SECTIONS = {
         "label": "Стипендии и социальные выплаты",
     },
     "dormitories": {
-        "url": f"{BASE_URL}/about/infrastructure/obshchezhitiya/",
+        "url": f"{BASE_URL}/about/hostel/",
         "label": "Общежития",
     },
     "employment": {
@@ -61,7 +61,7 @@ SECTIONS = {
         "label": "Трудоустройство выпускников",
     },
     "extracurricular": {
-        "url": f"{BASE_URL}/about/vneuchebnaya-rabota/",
+        "url": f"{BASE_URL}/about/educational-and-extra-curricular-work/",
         "label": "Внеучебная работа",
     },
     "announcements": {
@@ -115,15 +115,39 @@ def _remove_noise(soup: BeautifulSoup) -> None:
     for tag_name in ("nav", "footer", "header", "aside"):
         for tag in soup.find_all(tag_name):
             tag.decompose()
-    for tag in soup.find_all(True):
-        if not hasattr(tag, "attrs") or tag.attrs is None:
-            continue
-        raw_classes = tag.get("class")
-        classes = " ".join(raw_classes) if isinstance(raw_classes, list) else str(raw_classes or "")
-        tag_id = tag.get("id") or ""
-        combined = f"{classes} {tag_id}".lower()
-        if any(nc in combined for nc in NAV_CLASSES):
-            tag.decompose()
+
+    # Whole-token matching only. Substring matching ("header" in
+    # "header_height"/"vikon-content") decomposes the page content wrapper on
+    # the current mirea.ru markup. Table internals are never noise
+    # (rows carry legitimate classes like "table-header").
+    import re as _re
+
+    token_re = _re.compile(
+        r"^(?:[a-z-]*-)?(?:nav|footer|sidebar|menu|header|breadcrumb|navigation"
+        r"|banner|modal|social|copyright|top-panel)(?:-[a-z-]+)?$",
+        _re.I,
+    )
+
+    def _is_noise(tag) -> bool:
+        if tag.name in ("table", "thead", "tbody", "tfoot", "tr", "td", "th"):
+            return False
+        for cls in tag.get("class", []) or []:
+            if token_re.match(cls):
+                return True
+        tag_id = tag.get("id")
+        if tag_id and token_re.match(tag_id):
+            return True
+        return False
+
+    for _ in range(3):
+        targets = [t for t in soup.find_all(True) if t is not None and _is_noise(t)]
+        if not targets:
+            break
+        for tag in targets:
+            try:
+                tag.decompose()
+            except Exception:
+                pass
 
 
 def _parse_table(table) -> str:
