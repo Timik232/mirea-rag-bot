@@ -4,8 +4,10 @@ import zipfile, os, sys
 EXCLUDE_DIRS = {
     "models", "__pycache__", ".pytest_cache", ".deepeval", ".git",
     ".venv", "venv", "node_modules",
+    # stale/poisoned artifacts — not for distribution
+    "qdrant_old_75chunks", "mirea_data_backup_20261006",
 }
-EXCLUDE_FILES = {"mirea-rag-bot.zip", "build_zip.py", "_verify_layout.py"}
+EXCLUDE_FILES = {"mirea-rag-bot.zip", "build_zip.py", "_verify_layout.py", "requests.db"}
 EXCLUDE_EXT = {".pyc", ".pyo"}
 
 
